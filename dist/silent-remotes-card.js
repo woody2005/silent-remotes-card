@@ -24,6 +24,7 @@ let SilentRemotesCard = class SilentRemotesCard extends LitElement {
             fan: 'low',
             mode: 'cool',
             temperature: 23,
+            swing: 'on', // Added default swing state
         };
     }
     static get properties() {
@@ -33,9 +34,10 @@ let SilentRemotesCard = class SilentRemotesCard extends LitElement {
             errorHappned: { type: Boolean },
             fullCommands: {},
             acState: {
-                fan: 0,
-                mode: 0,
-                temperature: 23,
+                fan: '', // Ensure properties reflect the state type
+                mode: '',
+                temperature: 0,
+                swing: '',
             },
         };
     }
@@ -330,7 +332,21 @@ let SilentRemotesCard = class SilentRemotesCard extends LitElement {
     readAcFromLocalStorage() {
         const savedConfig = window.localStorage.getItem(this.title);
         if (savedConfig) {
-            this.acState = JSON.parse(savedConfig);
+            const parsedConfig = JSON.parse(savedConfig);
+            this.acState = {
+                fan: parsedConfig.fan || 'low',
+                mode: parsedConfig.mode || 'cool',
+                temperature: parsedConfig.temperature || 23,
+                swing: parsedConfig.swing || 'on', // Add default for swing
+            };
+        } else {
+            // Initialize with defaults if nothing is in local storage
+            this.acState = {
+                fan: 'low',
+                mode: 'cool',
+                temperature: 23,
+                swing: 'on',
+            };
         }
     }
     buildAcCommand(customCommand) {
@@ -338,20 +354,40 @@ let SilentRemotesCard = class SilentRemotesCard extends LitElement {
         try {
             let command = customCommand;
             if (!command) {
-                const fanExists = this.fullCommands[this.acState.mode][this.acState.fan];
-                const commandWithFan = fanExists
-                    ? this.fullCommands[this.acState.mode][this.acState.fan]
-                    : this.fullCommands[this.acState.mode]['auto'];
-                if (commandWithFan['static']) {
-                    command = commandWithFan['static'][this.acState.temperature];
+                // New logic:
+                let modeCommands = this.fullCommands[this.acState.mode];
+                let fanCommands = modeCommands ? modeCommands[this.acState.fan] : undefined;
+                if (!fanCommands && modeCommands) { // Fallback to 'auto' fan mode if specific fan mode doesn't exist
+                    fanCommands = modeCommands['auto'];
                 }
-                else {
-                    command = commandWithFan[this.acState.temperature];
+                let swingCommands = fanCommands ? fanCommands[this.acState.swing] : undefined;
+                // For now, let's assume if a specific swing state (e.g. "on") isn't found,
+                // we might try a default or error. Given 1403.json has "on" and "off",
+                // this should generally be found if acState.swing is "on" or "off".
+                if (!swingCommands && fanCommands) {
+                    // Attempt a default if current swing state not found (e.g. try "on" then "off")
+                    swingCommands = fanCommands['on'] || fanCommands['off'];
+                }
+
+                if (swingCommands) {
+                    command = swingCommands[this.acState.temperature.toString()]; // Ensure temperature is a string key
+                } else {
+                    console.error("Could not find command path for AC state:", this.acState);
+                    this.setError();
+                    return;
                 }
             }
+
+            if (!command) {
+                console.error("Command is still undefined after trying to build it for AC state:", this.acState);
+                this.setError();
+                return;
+            }
+
             if (((_a = this.fullData) === null || _a === void 0 ? void 0 : _a.commandsEncoding) === 'Base64') {
                 command = `b64:${command}`;
             }
+
             // this.hass.callService("remote","send_command", {
             this.hass.callService(this.callServiceProps.domain, this.callServiceProps.service, {
                 command,
@@ -360,8 +396,10 @@ let SilentRemotesCard = class SilentRemotesCard extends LitElement {
             this.saveAcToLocalStorage();
         }
         catch (e) {
+            console.log('Error building or sending AC command:', e, this.acState);
             this.setError();
-            throw new Error(e);
+            // No longer re-throwing error to prevent card from breaking entirely on one bad command.
+            // throw new Error(e);
         }
     }
     changeAcTempp(inc) {
